@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use rand::RngExt;
 
 #[derive(Debug)]
@@ -40,6 +42,20 @@ impl<'a> Matrix {
     pub fn col(&'a self, col: u32) -> &'a [f64] {
         &self.data[self.index(0, col)..self.index(self.rows, col)]
     }
+    pub fn op(&mut self, func: fn(f64) -> f64) {
+        for i in self.data.iter_mut() {
+            *i = func(*i);
+        }
+    }
+    pub fn opa(&mut self, func: fn(f64, f64) -> f64, x: f64) {
+        for i in self.data.iter_mut() {
+            *i = func(*i, x);
+        }
+    }
+    pub fn falten(&mut self) {
+        self.cols = self.rows * self.cols;
+        self.rows = 0;
+    }
 }
 
 impl std::ops::Add<&Matrix> for Matrix {
@@ -74,11 +90,47 @@ impl std::ops::Mul<&Matrix> for Matrix {
                 d.data.push(0.0);
                 for j in 0..rhs.rows {
                     let idx = d.index(r, c);
-                    d.data[idx] += self.data[self.index(r, j)]*rhs.data[rhs.index(j, c)];
+                    d.data[idx] += self.data[self.index(r, j)] * rhs.data[rhs.index(j, c)];
                 }
             }
         }
         d
+    }
+}
+
+struct Images {
+    data: Vec<Matrix>,
+}
+
+impl From<(Vec<u8>, Vec<u32>)> for Images {
+    fn from(value: (Vec<u8>, Vec<u32>)) -> Self {
+        assert!(value.1.len() >= 2);
+        let mut data = Vec::<Matrix>::new();
+        let whole = (value.1[1] * value.1[2]) as usize;
+        for i in 0..(value.1[0] as usize) {
+            let mut mdata = Vec::<f64>::new();
+            for j in 0..whole {
+                mdata.push((value.0[(i * whole) + j] as f64) / 255.0);
+            }
+            data.push(Matrix {
+                data: mdata,
+                cols: value.0[2].try_into().unwrap(),
+                rows: value.0[1].try_into().unwrap(),
+            });
+        }
+        Self { data }
+    }
+}
+
+struct Labels {
+    data: Vec<u8>,
+}
+
+impl From<(Vec<u8>, Vec<u32>)> for Labels {
+    fn from(value: (Vec<u8>, Vec<u32>)) -> Self {
+        Self {
+            data: value.0[0..value.1[0] as usize].to_vec(),
+        }
     }
 }
 
@@ -93,6 +145,21 @@ struct Network {
 struct Shape {
     input: u32,
     output: u32,
+}
+
+mod ops {
+    pub fn sigmoid(x: f64) -> f64 {
+        1.0 / (1.0 + (-x).exp())
+    }
+    pub fn tanh(x: f64) -> f64 {
+        x.tanh()
+    }
+    pub fn relu(x: f64) -> f64 {
+        x.min(0.0)
+    }
+    pub fn power(x: f64, y: f64) -> f64 {
+        x.powf(y)
+    }
 }
 
 impl Network {
@@ -120,16 +187,68 @@ impl Network {
     }
 }
 
+struct IdxFile<T: From<(Vec<u8>, Vec<u32>)>> {
+    dims: Vec<u32>,
+    magic: u32,
+    bytes: Vec<u8>,
+    items: T,
+}
+
+impl<T: From<(Vec<u8>, Vec<u32>)>> IdxFile<T> {
+    pub fn read<J: AsRef<Path>>(path: J, dimsc: usize) -> std::io::Result<Self> {
+        let source = std::fs::read(path)?;
+        let magic = u32::from_be_bytes(source[0..4].try_into().unwrap());
+        let mut dims = Vec::<u32>::new();
+        for i in 0..dimsc {
+            dims.push(u32::from_be_bytes(
+                source[(4 * i)+4..(4 * i) + 4*2].try_into().unwrap(),
+            ));
+        }
+        let bytes = source[4 + (4 * dims.len())..].to_vec();
+        Ok(Self {
+            dims: dims.clone(),
+            magic,
+            bytes: bytes.clone(),
+            items: T::from((bytes, dims)),
+        })
+    }
+}
+
 fn main() {
-    let mut n = Network::new(vec![
-        Shape{ input: 2, output: 8 },
-        Shape{ input: 8, output: 8 },
-        Shape{ input: 8, output: 8 },
-        Shape{ input: 8, output: 4 },
-    ], 1e-3, 1e-3);
-    let mut inp = Matrix::full(1, 2, 2.0);
+    let mut n = Network::new(
+        vec![
+            Shape {
+                input: 784,
+                output: 784,
+            },
+            Shape {
+                input: 784,
+                output: 16,
+            },
+            Shape {
+                input: 16,
+                output: 16,
+            },
+            Shape {
+                input: 16,
+                output: 10,
+            },
+        ],
+        1e-3,
+        1e-3,
+    );
+    let mut inp = Matrix::new(1, 784);
     while n.i < n.weights.len() {
         inp = n.feed_forward(inp);
     }
-    println!("{inp:?}");
+    //println!("{inp:?}");
+    let train_imgs =
+        IdxFile::<Images>::read("data/trainset-imgs/train-images-idx3-ubyte", 3).unwrap();
+    let train_txt =
+        IdxFile::<Labels>::read("data/trainset-text/train-labels-idx1-ubyte", 1).unwrap();
+    println!(
+        "train_imgs: {}, train_txt: {}",
+        train_imgs.items.data.len(),
+        train_txt.items.data.len()
+    );
 }
