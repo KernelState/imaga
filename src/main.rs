@@ -2,8 +2,8 @@ use std::path::Path;
 
 use rand::RngExt;
 
-#[derive(Debug)]
-struct Matrix {
+#[derive(Debug, Clone)]
+pub struct Matrix {
     rows: u32,
     cols: u32,
     data: Vec<f64>,
@@ -52,9 +52,9 @@ impl<'a> Matrix {
             *i = func(*i, x);
         }
     }
-    pub fn falten(&mut self) {
+    pub fn flatten(&mut self) {
         self.cols = self.rows * self.cols;
-        self.rows = 0;
+        self.rows = 1;
     }
 }
 
@@ -114,8 +114,8 @@ impl From<(Vec<u8>, Vec<u32>)> for Images {
             }
             data.push(Matrix {
                 data: mdata,
-                cols: value.0[2].try_into().unwrap(),
-                rows: value.0[1].try_into().unwrap(),
+                cols: value.1[2].try_into().unwrap(),
+                rows: value.1[1].try_into().unwrap(),
             });
         }
         Self { data }
@@ -178,10 +178,11 @@ impl Network {
             i: 0,
         }
     }
-    pub fn feed_forward(&mut self, inp: Matrix) -> Matrix {
+    pub fn feed_forward(&mut self, inp: Matrix, op: fn(f64)->f64) -> Matrix {
         assert!(self.i < self.weights.len());
         assert!(inp.rows == 1);
-        let l = (inp * &self.weights[self.i]) + &self.biases[self.i];
+        let mut l = (inp * &self.weights[self.i]) + &self.biases[self.i];
+        l.op(op);
         self.i += 1;
         l
     }
@@ -214,6 +215,34 @@ impl<T: From<(Vec<u8>, Vec<u32>)>> IdxFile<T> {
     }
 }
 
+fn mnist_output(label: u8) -> Matrix {
+    let mut data = vec![];
+    for i in 0..=9 {
+        if i == label {
+            data.push(1.0);
+        } else {
+            data.push(0.0);
+        }
+    }
+    Matrix{
+        cols: 10,
+        rows: 1,
+        data
+    }
+}
+
+pub fn cost(output: Matrix, correct: Matrix) -> f64 {
+    println!("costing: {:?}\n{:?}", output, correct);
+    assert!(output.cols == correct.cols && output.rows == correct.rows && output.data.len() == correct.data.len());
+    assert!(output.rows == 1);
+    let mut r = 0.0;
+    for i in 0..output.data.len() {
+        r += (correct.data[i]-output.data[i])/2.0;
+    }
+    r /= output.data.len() as f64;
+    r
+}
+
 fn main() {
     let mut n = Network::new(
         vec![
@@ -237,10 +266,6 @@ fn main() {
         1e-3,
         1e-3,
     );
-    let mut inp = Matrix::new(1, 784);
-    while n.i < n.weights.len() {
-        inp = n.feed_forward(inp);
-    }
     //println!("{inp:?}");
     let train_imgs =
         IdxFile::<Images>::read("data/trainset-imgs/train-images-idx3-ubyte", 3).unwrap();
@@ -251,4 +276,11 @@ fn main() {
         train_imgs.items.data.len(),
         train_txt.items.data.len()
     );
+    let mut inp = train_imgs.items.data[0].clone();
+    inp.flatten();
+    while n.i < n.weights.len() {
+        println!("passing input ({}, {})", inp.rows, inp.cols);
+        inp = n.feed_forward(inp, ops::tanh);
+    }
+    println!("cost: {:?}", cost(inp, mnist_output(train_txt.items.data[0].clone())));
 }
